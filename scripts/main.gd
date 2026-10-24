@@ -115,7 +115,7 @@ func _spawn_next_block() -> void:
 	var x := clampf(_last_x + randf_range(-MAX_STEP_X, MAX_STEP_X), w / 2.0, _width - w / 2.0)
 	_last_x = x
 	# Natural rock tones: greys with a hint of sandstone or slate.
-	var rock_color := Color.from_hsv(randf_range(0.04, 0.12), randf_range(0.08, 0.28), randf_range(0.42, 0.62))
+	var rock_color := Color.from_hsv(randf_range(0.05, 0.11), randf_range(0.06, 0.22), randf_range(0.66, 0.84))
 	var height := -_next_y / BLOCK_GAP_Y
 	var snow_chance := inverse_lerp(SNOW_START_HEIGHT, SNOW_FULL_HEIGHT, height)
 	var block := _spawn_block(Vector2(x, _next_y), Vector2(w, BLOCK_HEIGHT), rock_color, false, randf() < snow_chance)
