@@ -18,6 +18,10 @@ const ENEMY_MIN_BLOCK_W := 60.0 # enemies need room to patrol
 const ROCK_START_HEIGHT := 5    # rocks start falling once this height is reached
 const ROCK_AIM_CHANCE := 0.35   # share of rocks dropped right above the player
 const DUST := Color(0.82, 0.76, 0.66, 0.85)
+const SNOW_START_HEIGHT := 40   # ledges start getting snow caps here...
+const SNOW_FULL_HEIGHT := 70    # ...and all have them from here on
+const NIGHT_CLIMB := 9000.0     # matches background.gd: world lighting is darkest here
+const NIGHT_LIGHT := Color(0.55, 0.6, 0.82)
 
 @onready var player: CharacterBody2D = $Player
 @onready var camera: Camera2D = $Camera2D
@@ -32,6 +36,7 @@ var _width := 0.0
 var _half_height := 0.0
 var _rock_timer := 0.0
 var _shake := 0.0  # camera shake strength in px, decays over time
+var _light: CanvasModulate
 var _score_label: Label
 var _message_label: Label
 
@@ -49,6 +54,9 @@ func _ready() -> void:
 	background.camera = camera
 	sky.add_child(background)
 	add_child(sky)
+	# Tints only the world (not the sky or HUD layers), so it dims as the sky darkens.
+	_light = CanvasModulate.new()
+	add_child(_light)
 
 	# Ground: top surface at y = 0.
 	_spawn_block(Vector2(_width / 2.0, BLOCK_HEIGHT / 2.0), Vector2(_width, BLOCK_HEIGHT), Color.WHITE, true)
@@ -62,6 +70,7 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	_shake *= exp(-10.0 * delta)
 	camera.offset = Vector2(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0)) * _shake
+	_light.color = Color.WHITE.lerp(NIGHT_LIGHT, clampf(-camera.position.y / NIGHT_CLIMB, 0.0, 1.0))
 
 	if _game_over:
 		if Input.is_action_just_pressed("jump"):
@@ -107,7 +116,9 @@ func _spawn_next_block() -> void:
 	_last_x = x
 	# Natural rock tones: greys with a hint of sandstone or slate.
 	var rock_color := Color.from_hsv(randf_range(0.04, 0.12), randf_range(0.08, 0.28), randf_range(0.42, 0.62))
-	var block := _spawn_block(Vector2(x, _next_y), Vector2(w, BLOCK_HEIGHT), rock_color)
+	var height := -_next_y / BLOCK_GAP_Y
+	var snow_chance := inverse_lerp(SNOW_START_HEIGHT, SNOW_FULL_HEIGHT, height)
+	var block := _spawn_block(Vector2(x, _next_y), Vector2(w, BLOCK_HEIGHT), rock_color, false, randf() < snow_chance)
 	_next_y -= BLOCK_GAP_Y
 	_blocks_spawned += 1
 
@@ -117,11 +128,12 @@ func _spawn_next_block() -> void:
 		_spawn_enemy(block, minf(110.0, 40.0 + _blocks_spawned * 0.8))
 
 
-func _spawn_block(pos: Vector2, block_size: Vector2, block_color: Color, is_ground := false) -> Block:
+func _spawn_block(pos: Vector2, block_size: Vector2, block_color: Color, is_ground := false, is_snowy := false) -> Block:
 	var block := Block.new()
 	block.size = block_size
 	block.color = block_color
 	block.ground = is_ground
+	block.snowy = is_snowy
 	block.position = pos
 	add_child(block)
 	_blocks.append(block)
@@ -136,7 +148,7 @@ func _spawn_enemy(block: Block, speed: float) -> void:
 	enemy.speed = speed
 	enemy.player_hit.connect(_end_game.bind("Von einem Gegner erwischt!", true))
 	enemy.stomped.connect(func(at: Vector2) -> void:
-		_spawn_dust(at, 12, Color(Enemy.BODY, 0.8))
+		_spawn_dust(at, 12, Color(Enemy.BODY.lightened(0.3), 0.8))
 		_shake = maxf(_shake, 2.0))
 	block.add_child(enemy)
 

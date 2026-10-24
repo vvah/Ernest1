@@ -14,6 +14,8 @@ const GRAVITY := 1400.0
 const MAX_FALL_SPEED := 900.0
 const COYOTE_TIME := 0.08        # can still jump shortly after leaving an edge
 const JUMP_BUFFER := 0.1         # jump pressed shortly before landing still counts
+const STUN_IMPACT := 800.0       # landing faster than this (a drop of ~2 blocks) knocks the wind out
+const STUN_TIME := 0.4
 const HALF_WIDTH := 9.0
 
 const SKIN := Color(0.93, 0.76, 0.62)
@@ -28,6 +30,7 @@ var _facing := 1.0
 var _coyote := 0.0
 var _jump_buffer := 0.0
 var _squash := 0.0  # > 0 squashed (landing), < 0 stretched (jump)
+var _stun := 0.0  # seconds left without control after a hard landing
 var _dead := false
 
 
@@ -64,9 +67,10 @@ func _physics_process(delta: float) -> void:
 	if not is_on_floor():
 		velocity.y = minf(velocity.y + GRAVITY * delta, MAX_FALL_SPEED)
 
+	_stun = maxf(0.0, _stun - delta)
 	_coyote = COYOTE_TIME if is_on_floor() else _coyote - delta
 	_jump_buffer = JUMP_BUFFER if Input.is_action_just_pressed("jump") else _jump_buffer - delta
-	if _jump_buffer > 0.0 and _coyote > 0.0:
+	if _jump_buffer > 0.0 and _coyote > 0.0 and _stun == 0.0:
 		velocity.y = JUMP_VELOCITY
 		_jump_buffer = 0.0
 		_coyote = 0.0
@@ -75,7 +79,7 @@ func _physics_process(delta: float) -> void:
 	if Input.is_action_just_released("jump") and velocity.y < 0.0:
 		velocity.y *= 0.5
 
-	var dir := Input.get_axis("move_left", "move_right")
+	var dir := 0.0 if _stun > 0.0 else Input.get_axis("move_left", "move_right")
 	var accel: float
 	if is_on_floor():
 		var braking := dir == 0.0 or signf(dir) != signf(velocity.x)
@@ -91,6 +95,8 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 	if is_on_floor() and not was_on_floor:
 		_squash = clampf(fall_speed / 3000.0, 0.05, 0.3)
+		if fall_speed > STUN_IMPACT:
+			_stun = STUN_TIME
 		landed.emit(fall_speed)
 
 	var width := get_viewport_rect().size.x
@@ -123,7 +129,9 @@ func _draw() -> void:
 	var airborne := not is_on_floor() or _dead
 	var running := _walk_time > 0.0
 	var breathe := 0.0 if running or airborne else sin(_time * 2.5) * 0.4
-	var hip := Vector2(0, -16)
+	if _stun > 0.0:
+		breathe = 6.0 + sin(_time * 14.0) * 0.8  # torso dropped and heaving
+	var hip := Vector2(0, -16 + (6.0 if _stun > 0.0 else 0.0))
 	var shoulder := Vector2(0, -29 + breathe)
 	var back_skin := SKIN.darkened(0.18)
 	var back_pants := PANTS.darkened(0.25)
@@ -135,6 +143,10 @@ func _draw() -> void:
 		var rising := velocity.y < 0.0
 		legs = [Vector2(0.9, -1.4), Vector2(-0.2, -0.5)] if rising else [Vector2(0.4, -0.6), Vector2(-0.1, -0.2)]
 		arms = [Vector2(2.6, 0.3), Vector2(-0.6, 0.5)] if rising else [Vector2(1.8, 0.3), Vector2(-1.4, 0.3)]
+	elif _stun > 0.0:
+		# Crouched, hands on knees, catching breath.
+		legs = [Vector2(1.1, -1.9), Vector2(0.9, -1.7)]
+		arms = [Vector2(0.9, -0.3), Vector2(0.7, -0.2)]
 	elif running:
 		var s := sin(_walk_time)
 		var c := cos(_walk_time)

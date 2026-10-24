@@ -6,11 +6,14 @@ extends StaticBody2D
 const MOSS := Color(0.32, 0.48, 0.2)
 const GRASS := Color(0.3, 0.55, 0.2)
 const DIRT := Color(0.38, 0.27, 0.17)
+const SNOW := Color(0.94, 0.96, 1.0)
+const ICE := Color(0.75, 0.88, 0.98, 0.9)
 const GROUND_DEPTH := 600.0  # dirt drawn below the ground so no sky shows under it
 
 var size := Vector2(100, 20)
 var color := Color(0.5, 0.47, 0.43)
 var ground := false
+var snowy := false  # high up: snow cap and icicles instead of moss
 
 var _outline := PackedVector2Array()
 var _spots: Array[Dictionary] = []  # {pos, r, color}
@@ -34,7 +37,7 @@ func _ready() -> void:
 
 func _build_look() -> void:
 	var half := size / 2.0
-	_mossy = ground or randf() < 0.7
+	_mossy = ground or snowy or randf() < 0.7
 
 	if ground:
 		_outline = PackedVector2Array([
@@ -94,6 +97,15 @@ func _draw() -> void:
 
 	if not _mossy:
 		draw_rect(Rect2(-half.x, -half.y, size.x, 2.5), color.lightened(0.25))
+		return
+	if snowy:
+		for i in range(0, _tufts.size(), 4):
+			# Hang from the rough underside (skip the two top corners and the end points).
+			var tip := _outline[3 + (i * 7) % (_outline.size() - 4)]
+			draw_colored_polygon(PackedVector2Array([tip + Vector2(-1.5, -1), tip + Vector2(1.5, -1), tip + Vector2(0, _tufts[i].y + 2.0)]), ICE)
+		draw_rect(Rect2(-half.x, -half.y - 2.0, size.x, 5.0), SNOW.darkened(0.08))
+		for tuft in _tufts:
+			draw_circle(Vector2(tuft.x, -half.y - 1.5), 1.2 + tuft.y * 0.35, SNOW)
 		return
 	var green := GRASS if ground else MOSS
 	draw_rect(Rect2(-half.x, -half.y - 1.0, size.x, 7.0 if ground else 3.5), green)

@@ -11,6 +11,8 @@ const HIGH_BOTTOM := Color(0.2, 0.24, 0.45)
 const FAR_MOUNTAIN := Color(0.42, 0.48, 0.6)
 const NEAR_HILL := Color(0.24, 0.36, 0.28)
 const SKY_DARK_CLIMB := 9000.0  # climb (px) at which the sky is fully dark
+const SNOW_START_CLIMB := 3200.0  # ~ height 40, where main.gd starts putting snow on ledges
+const WIND := 25.0
 
 var camera: Camera2D
 
@@ -20,6 +22,7 @@ var _far := PackedVector2Array()
 var _near := PackedVector2Array()
 var _clouds: Array[Dictionary] = []  # {pos, speed, scale}
 var _stars := PackedVector2Array()
+var _flakes := PackedVector3Array()  # x, y, z = depth (0 far .. 1 near)
 var _time := 0.0
 
 
@@ -36,6 +39,8 @@ func _ready() -> void:
 		})
 	for i in 70:
 		_stars.append(Vector2(randf() * _size.x, randf() * _size.y))
+	for i in 120:
+		_flakes.append(Vector3(randf() * _size.x, randf() * _size.y, randf()))
 
 
 ## Alternating peaks and valleys across the screen width; y is relative to the baseline.
@@ -84,6 +89,17 @@ func _draw() -> void:
 				fposmod(cloud.pos.y + climb * 0.3, _size.y + 200.0) - 100.0)
 			var sky := top.lerp(bottom, clampf(pos.y / _size.y, 0.0, 1.0))
 			_draw_cloud(pos, cloud.scale, Color(0.97, 0.98, 1.0).lerp(sky, 0.2 + 0.8 * cloud_fade))
+
+	# Snowfall gets denser with height; nearer flakes are bigger, faster and sway more.
+	var snow := clampf((climb - SNOW_START_CLIMB) / 3000.0, 0.0, 1.0)
+	var visible_flakes := int(_flakes.size() * snow)
+	for i in visible_flakes:
+		var f := _flakes[i]
+		var fall := 30.0 + 50.0 * f.z
+		var pos := Vector2(
+			fposmod(f.x + _time * WIND * (0.5 + f.z) + sin(_time * 1.5 + f.y) * 8.0 * f.z, _size.x),
+			fposmod(f.y + _time * fall + climb * (0.2 + 0.5 * f.z), _size.y))
+		draw_circle(pos, 0.8 + 1.6 * f.z, Color(1, 1, 1, 0.5 + 0.4 * f.z))
 
 
 func _draw_ridge(ridge: PackedVector2Array, baseline: float, color: Color, snow: bool) -> void:

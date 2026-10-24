@@ -1,12 +1,13 @@
 extends Area2D
-## Slime that patrols back and forth on top of its block. Origin is at its feet.
+## Beetle that patrols back and forth on top of its block. Origin is at its feet.
 ## Stomping it from above defeats it; touching it any other way emits player_hit.
 
 signal player_hit
 signal stomped(at: Vector2)
 
 const SIZE := Vector2(22, 16)
-const BODY := Color(0.55, 0.2, 0.7)
+const BODY := Color(0.32, 0.2, 0.12)
+const LEG := Color(0.12, 0.08, 0.05)
 
 var patrol_half_width := 30.0
 var speed := 50.0
@@ -58,13 +59,35 @@ func _on_body_entered(body: Node2D) -> void:
 		player_hit.emit()
 
 
-func _draw() -> void:
-	var wobble := sin(_time * 10.0) * 1.5
-	var r := SIZE.x / 2.0
-	draw_circle(Vector2(0, -SIZE.y + r - wobble * 0.5), r, BODY)
-	draw_rect(Rect2(-r, -SIZE.y + r, SIZE.x, SIZE.y - r), BODY)
+func _ellipse(center: Vector2, radii: Vector2) -> PackedVector2Array:
+	var points := PackedVector2Array()
+	for i in 16:
+		var a := TAU * i / 16.0
+		points.append(center + Vector2(cos(a) * radii.x, sin(a) * radii.y))
+	return points
 
-	for side in [-1.0, 1.0]:
-		var eye := Vector2(side * 4.0 + _dir * 2.0, -SIZE.y + 7.0)
-		draw_circle(eye, 3.0, Color.WHITE)
-		draw_circle(eye + Vector2(_dir * 1.2, 0), 1.4, Color.BLACK)
+
+func _draw() -> void:
+	# Three scuttling legs, alternating like a real insect's tripod gait.
+	for i in 3:
+		var hip := Vector2((i - 1) * 6.0, -5.0)
+		var step := sin(_time * 22.0 + i * PI) * 2.5
+		var knee := hip + Vector2(step - 1.5, -2.0)
+		draw_polyline(PackedVector2Array([hip, knee, Vector2(hip.x + step * 1.4, 0)]), LEG, 1.3)
+
+	# Head, mandibles and antennae on the side it walks towards.
+	var head := Vector2(_dir * 10.0, -6.0)
+	draw_line(head, head + Vector2(_dir * 4.5, 2.0), LEG, 1.3)
+	var twitch := sin(_time * 7.0) * 1.5
+	draw_polyline(PackedVector2Array([head, head + Vector2(_dir * 4.0, -5.0), head + Vector2(_dir * 9.0, -6.0 + twitch)]), LEG, 1.0)
+	draw_circle(head, 4.0, BODY.darkened(0.35))
+	draw_circle(head + Vector2(_dir * 2.0, -1.0), 1.0, Color(0.9, 0.85, 0.6))
+
+	# Glossy shell split down the middle.
+	var shell := Vector2(-_dir * 1.0, -SIZE.y / 2.0 - 1.0)
+	draw_colored_polygon(_ellipse(shell, Vector2(SIZE.x / 2.0, SIZE.y / 2.0)), BODY)
+	draw_colored_polygon(_ellipse(shell + Vector2(-2.0, -3.0), Vector2(5.0, 2.0)), BODY.lightened(0.35))
+	draw_line(shell + Vector2(_dir * SIZE.x / 2.0, 0), shell + Vector2(-_dir * 6.0, 0), BODY.darkened(0.5), 1.0)
+	var closed := _ellipse(shell, Vector2(SIZE.x / 2.0, SIZE.y / 2.0))
+	closed.append(closed[0])
+	draw_polyline(closed, BODY.darkened(0.55), 1.0)
