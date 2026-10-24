@@ -15,6 +15,7 @@ var radius := 12.0
 var _fall_speed := 0.0
 var _warn_left := WARN_TIME
 var _spin := 0.0
+var _angle := 0.0  # tumble; applied to the outline only so the lighting stays fixed
 var _outline := PackedVector2Array()
 
 
@@ -49,7 +50,8 @@ func _physics_process(delta: float) -> void:
 
 	_fall_speed = minf(_fall_speed + GRAVITY * delta, MAX_FALL_SPEED)
 	position.y += _fall_speed * delta
-	rotation += _spin * delta
+	_angle += _spin * delta
+	queue_redraw()
 	if position.y > screen_top + half_height * 2.0 + 100.0:
 		queue_free()
 
@@ -68,8 +70,15 @@ func _draw() -> void:
 			draw_circle(Vector2(0, 6), 1.8, Color.WHITE)
 		return
 
-	draw_colored_polygon(_outline, COLOR)
-	var closed := _outline.duplicate()
-	closed.append(_outline[0])
-	draw_polyline(closed, COLOR.darkened(0.45), 2.0)
-	draw_circle(Vector2(-radius * 0.3, -radius * 0.3), radius * 0.25, COLOR.lightened(0.25))
+	# Shaded body with a lit face towards the top left.
+	var shape := PackedVector2Array()
+	var lit := PackedVector2Array()
+	for p in _outline:
+		var q := p.rotated(_angle)
+		shape.append(q)
+		lit.append(q * 0.72 + Vector2(-radius, -radius) * 0.18)
+	draw_colored_polygon(shape, COLOR.darkened(0.2))
+	draw_colored_polygon(lit, COLOR)
+	draw_circle(Vector2(-radius * 0.35, -radius * 0.35), radius * 0.22, COLOR.lightened(0.25))
+	shape.append(shape[0])
+	draw_polyline(shape, COLOR.darkened(0.5), 2.0)

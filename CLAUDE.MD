@@ -14,6 +14,9 @@ A simple 2D endless climber built with Godot: a small human character jumps up a
 - `scripts/block.gd` — `StaticBody2D` platform with no scene; `main.gd` preloads it, sets `size`/`color`, then adds it. Collision is one-way so the player jumps up through blocks.
 - `scripts/enemy.gd` — `Area2D` slime with no scene, spawned by `main.gd` as a child of a block (freed with it) and patrolling its width. Landing on it while falling stomps it (`player.bounce()`); any other contact emits `player_hit`, which ends the run. Enemies find the player via the `player` group.
 - `scripts/rock.gd` — `Area2D` falling rock with no scene, spawned by `main.gd` on a timer once height ≥ `ROCK_START_HEIGHT`. It needs the `camera` reference: it first sits at the screen top as a blinking warning (collision off), then falls through blocks; contact emits `player_hit`. Frees itself below the screen.
+- `scripts/background.gd` — sky drawn in screen space on a `CanvasLayer` (layer -1) that `main.gd` creates; needs the `camera` reference. Sky darkens and stars appear with height; mountains/clouds use parallax.
+- Player movement has momentum (`GROUND_ACCEL`/`AIR_ACCEL`/friction), coyote time and jump buffering. It emits `landed(impact_speed)`, which `main.gd` uses for dust (`CPUParticles2D`) and camera shake (`camera.offset`). On a hit `main.gd` calls `player.die()` (tumbles off, collisions off); falling off-screen just stops its physics.
+- Blocks look like rock ledges (rough underside, cracks, moss); that is drawing only — collision stays a rectangle. `ground = true` draws dirt and grass instead.
 - Reachability is coupled: `BLOCK_GAP_Y`/`MAX_STEP_X` in `main.gd` must stay within the jump arc from `JUMP_VELOCITY`/`GRAVITY`/`SPEED` in `player.gd` (peak ≈ 112 px).
 - Viewport is 480×720 portrait; ground's top surface is at y = 0, so height = `-y / BLOCK_GAP_Y`.
 - In-game text is German.

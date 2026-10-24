@@ -3,6 +3,7 @@ extends Area2D
 ## Stomping it from above defeats it; touching it any other way emits player_hit.
 
 signal player_hit
+signal stomped(at: Vector2)
 
 const SIZE := Vector2(22, 16)
 const BODY := Color(0.55, 0.2, 0.7)
@@ -48,6 +49,7 @@ func _on_body_entered(body: Node2D) -> void:
 	if player.velocity.y > 0.0 and player.global_position.y < global_position.y - SIZE.y * 0.4:
 		_dead = true
 		player.bounce()
+		stomped.emit(global_position)
 		set_deferred("monitoring", false)
 		var tween := create_tween()
 		tween.tween_property(self, "scale", Vector2(1.5, 0.15), 0.15)
