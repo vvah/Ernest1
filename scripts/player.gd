@@ -2,7 +2,8 @@ extends CharacterBody2D
 ## The little human. Origin is at the feet; drawn with primitives in _draw().
 ## Movement has momentum: it speeds up and slows down instead of snapping.
 ## Has health: hits knock the player back, leave visible injuries and, when
-## health is low, make them limp. main.gd reacts to `hurt` and `died`.
+## health is low, make them limp. Fireballs set them alight for a moment.
+## main.gd reacts to `hurt` and `died`.
 
 signal landed(impact_speed: float)
 signal hurt(amount: float, from: Vector2)
@@ -30,16 +31,22 @@ const INVULNERABLE_TIME := 1.0   # no further damage right after a hit (flickers
 const KNOCKBACK := Vector2(230.0, -280.0)
 const LIMP_HEALTH := 35.0        # below this the player limps and slows down
 const LIMP_SPEED := 0.7
+const BURN_TIME := 1.6           # seconds on fire after a fireball
+const BURN_DPS := 7.0            # damage per second while burning
 
-const SKIN := Color(0.93, 0.76, 0.62)
-const PALE_SKIN := Color(0.84, 0.8, 0.76)
-const SHIRT := Color(0.72, 0.22, 0.2)
-const PANTS := Color(0.22, 0.28, 0.45)
-const HAIR := Color(0.3, 0.19, 0.1)
-const SHOE := Color(0.18, 0.14, 0.12)
-const BRUISE := Color(0.42, 0.28, 0.52, 0.6)
+# Street look: green T-shirt, blue jeans, white sneakers, a gold chain,
+# short buzzed black hair and a trimmed beard.
+const SKIN := Color(0.42, 0.27, 0.18)
+const ASHEN_SKIN := Color(0.46, 0.4, 0.36)  # loss of blood greys the skin
+const SHIRT := Color(0.24, 0.55, 0.28)
+const PANTS := Color(0.2, 0.3, 0.5)
+const HAIR := Color(0.07, 0.06, 0.06)
+const SHOE := Color(0.95, 0.95, 0.95)
+const GOLD := Color(0.95, 0.78, 0.25)
+const BRUISE := Color(0.22, 0.1, 0.22, 0.7)
 const BLOOD := Color(0.5, 0.03, 0.04)
-const DIRT := Color(0.4, 0.3, 0.2, 0.45)
+const DIRT := Color(0.4, 0.3, 0.2, 0.5)
+const SOOT := Color(0.08, 0.07, 0.06, 0.75)
 
 var health := MAX_HEALTH
 
@@ -53,6 +60,8 @@ var _stun := 0.0  # seconds left without control (hard landing, knockback)
 var _hurt := 0.0  # seconds left of the flinch
 var _invulnerable := 0.0
 var _knock_dir := 0.0
+var _burn := 0.0  # seconds left on fire
+var _scorched := false  # clothes singed by fire (stays for the run)
 var _dead := false
 
 
@@ -98,6 +107,14 @@ func take_damage(amount: float, from: Vector2, cause: String, knockback := true)
 		died.emit(cause)
 
 
+## Sets the clothes alight: damage over time that ignores invulnerability.
+func ignite() -> void:
+	if _dead:
+		return
+	_burn = BURN_TIME
+	_scorched = true
+
+
 func heal(amount: float) -> void:
 	if _dead:
 		return
@@ -126,11 +143,19 @@ func _physics_process(delta: float) -> void:
 	_squash = move_toward(_squash, 0.0, delta * 1.2)
 
 	if _dead:
+		_burn = maxf(0.0, _burn - delta)
 		velocity.y += GRAVITY * delta
 		position += velocity * delta
 		rotation += signf(velocity.x) * 7.0 * delta
 		queue_redraw()
 		return
+
+	if _burn > 0.0:
+		_burn = maxf(0.0, _burn - delta)
+		health = maxf(0.0, health - BURN_DPS * delta)
+		if health <= 0.0:
+			died.emit("Verbrannt!")
+			return
 
 	if not is_on_floor():
 		velocity.y = minf(velocity.y + GRAVITY * delta, MAX_FALL_SPEED)
@@ -183,12 +208,14 @@ func _physics_process(delta: float) -> void:
 
 
 ## Two-segment limb from `root`; angles are relative to straight down and
-## positive angles point in the facing direction. Returns [joint, end].
-func _limb(root: Vector2, angle: float, bend: float, length: float, color: Color, width: float) -> PackedVector2Array:
+## positive angles point in the facing direction. `lower` colours the second
+## segment (sleeve/skin, shorts/sock). Returns [joint, end].
+func _limb(root: Vector2, angle: float, bend: float, length: float, upper: Color, lower: Color, width: float) -> PackedVector2Array:
 	var joint := root + Vector2(sin(angle) * _facing, cos(angle)) * length
 	var end := joint + Vector2(sin(angle + bend) * _facing, cos(angle + bend)) * length
-	draw_polyline(PackedVector2Array([root, joint, end]), color, width)
-	draw_circle(joint, width / 2.0, color)
+	draw_line(joint, end, lower, width)
+	draw_circle(joint, width / 2.0, lower)
+	draw_line(root, joint, upper, width)
 	return PackedVector2Array([joint, end])
 
 
@@ -216,9 +243,11 @@ func _draw() -> void:
 	if limping and running:
 		hip.y += maxf(0.0, sin(_walk_time)) * 1.8  # dips onto the bad leg
 	var shoulder := Vector2(0, hip.y - 13 + breathe)
-	var skin := SKIN.lerp(PALE_SKIN, injury * 0.7)
+	var skin := SKIN.lerp(ASHEN_SKIN, injury * 0.6)
+	var shirt := SHIRT.lerp(Color(0.2, 0.22, 0.16), 0.35) if _scorched else SHIRT
 	var back_skin := skin.darkened(0.18)
 	var back_pants := PANTS.darkened(0.25)
+	var back_shirt := shirt.darkened(0.2)
 
 	# Leg/arm poses: [thigh angle, knee bend] per leg, [upper arm, elbow] per arm.
 	var legs: Array
@@ -235,6 +264,11 @@ func _draw() -> void:
 		# Crouched, hands on knees, catching breath.
 		legs = [Vector2(1.1, -1.9), Vector2(0.9, -1.7)]
 		arms = [Vector2(0.9, -0.3), Vector2(0.7, -0.2)]
+	elif _burn > 0.0:
+		# Frantically patting out the flames.
+		var pat := sin(_time * 30.0) * 0.5
+		legs = [Vector2(0.15, -0.2), Vector2(-0.15, -0.1)]
+		arms = [Vector2(1.0 + pat, 1.6), Vector2(1.2 - pat, 1.5)]
 	elif running:
 		var s := sin(_walk_time)
 		var c := cos(_walk_time)
@@ -252,46 +286,63 @@ func _draw() -> void:
 			arms[1] = Vector2(0.5, 1.4)
 
 	# Back limbs first (darker, behind the body).
-	_limb(shoulder + Vector2(-_facing, 0), arms[1].x, arms[1].y, 6.5, back_skin, 3.0)
-	var back_leg := _limb(hip, legs[1].x, legs[1].y, 8.0, back_pants, 4.0)
-	draw_line(back_leg[1], back_leg[1] + Vector2(_facing * 3.5, 0), SHOE.darkened(0.2), 3.0)
-	var front_leg := _limb(hip, legs[0].x, legs[0].y, 8.0, PANTS, 4.0)
-	draw_line(front_leg[1], front_leg[1] + Vector2(_facing * 3.5, 0), SHOE, 3.0)
+	_limb(shoulder + Vector2(-_facing, 0), arms[1].x, arms[1].y, 6.5, back_shirt, back_skin, 3.0)
+	var back_leg := _limb(hip, legs[1].x, legs[1].y, 8.0, back_pants, back_pants, 4.0)
+	draw_line(back_leg[1], back_leg[1] + Vector2(_facing * 4.0, 0), SHOE.darkened(0.25 + 0.3 * injury), 3.5)
+	var front_leg := _limb(hip, legs[0].x, legs[0].y, 8.0, PANTS, PANTS, 4.0)
+	draw_line(front_leg[1], front_leg[1] + Vector2(_facing * 4.0, 0), SHOE.darkened(0.3 * injury), 3.5)  # sneakers get grubby
 	if health < 60.0:
-		# Torn trouser knee with a graze showing through.
+		# Torn jeans knee with a graze showing through.
 		draw_circle(front_leg[0], 1.8, skin.darkened(0.05))
 		draw_circle(front_leg[0] + Vector2(0, 0.5), 0.9, BLOOD.lightened(0.15))
 	if health < 90.0:
 		draw_circle(hip + Vector2(_facing * 2.0, 5.0), 1.6, DIRT)
 		draw_circle(back_leg[0], 1.4, DIRT)
 
-	# Torso with a shaded back side and a belt.
-	var torso := Rect2(-6, shoulder.y - 2, 12, hip.y - shoulder.y + 3)
-	draw_rect(torso, SHIRT)
+	# T-shirt with a shaded back side, jeans waist and a gold chain.
+	var torso := Rect2(-6, shoulder.y - 2, 12, hip.y - shoulder.y + 1)
+	draw_rect(torso, shirt)
 	var back_x := -6.0 if _facing > 0.0 else 3.0
-	draw_rect(Rect2(back_x, torso.position.y, 3, torso.size.y), SHIRT.darkened(0.2))
+	draw_rect(Rect2(back_x, torso.position.y, 3, torso.size.y), Color(0, 0, 0, 0.18))
 	if health < 90.0:
-		draw_circle(Vector2(_facing * 2.5, shoulder.y + 3.0), 1.8, DIRT)
+		draw_circle(Vector2(_facing * 2.5, shoulder.y + 4.0), 1.8, DIRT)
+	if _scorched:
+		# Singed holes with charred edges.
+		draw_circle(Vector2(-_facing * 2.0, shoulder.y + 6.0), 2.2, SOOT)
+		draw_circle(Vector2(_facing * 3.0, hip.y - 4.0), 1.5, SOOT)
 	if health < 50.0:
 		# Ripped hem showing skin, plus a frayed tear.
-		var hem := hip.y - 3.0
+		var hem := hip.y - 2.0
 		draw_colored_polygon(PackedVector2Array([
 			Vector2(_facing * 1.0, hem), Vector2(_facing * 5.5, hem), Vector2(_facing * 3.5, hem - 5.0)]), skin.darkened(0.1))
-		draw_line(Vector2(-_facing * 3.0, shoulder.y + 2.0), Vector2(-_facing * 1.0, shoulder.y + 6.0), SHIRT.darkened(0.5), 1.0)
+		draw_line(Vector2(-_facing * 3.0, shoulder.y + 2.0), Vector2(-_facing * 1.0, shoulder.y + 6.0), shirt.darkened(0.5), 1.0)
 	if health < 30.0:
 		# Blood soaking through the shirt, with a drip.
 		var wound := Vector2(_facing * 0.5, shoulder.y + 7.0)
 		draw_circle(wound, 2.6, BLOOD.lightened(0.05))
 		draw_circle(wound + Vector2(0.8, -0.5), 1.6, BLOOD.darkened(0.2))
 		draw_line(wound, wound + Vector2(0.3, 4.0 + sin(_time * 1.3) * 0.5), BLOOD, 1.2)
-	draw_rect(Rect2(-6, hip.y - 3, 12, 3), PANTS.darkened(0.35))
+	draw_rect(Rect2(-6, hip.y - 2, 12, 3), PANTS)
+	# The chain snaps when badly hurt and dangles from one side.
+	if health >= 30.0:
+		draw_polyline(PackedVector2Array([Vector2(-2.5, shoulder.y - 1.5), Vector2(_facing * 1.0, shoulder.y + 3.0), Vector2(3.0, shoulder.y - 1.5)]), GOLD, 1.0)
+	else:
+		draw_polyline(PackedVector2Array([Vector2(-2.5, shoulder.y - 1.5), Vector2(-2.0, shoulder.y + 4.0)]), GOLD, 1.0)
 
-	# Head: hair behind, face turned towards the facing direction; snaps back on a hit.
+	# Head: face turned towards the facing direction; snaps back on a hit.
 	var head := Vector2(_facing * 0.5 - _facing * 1.5 * flinch, shoulder.y - 9)
 	draw_rect(Rect2(-2, shoulder.y - 4, 4, 3), skin.darkened(0.1))  # neck
-	draw_circle(head + Vector2(-_facing * 1.0, -1.5), 7.2, HAIR)
+	draw_circle(head + Vector2(-_facing * 0.5, -0.5), 6.9, HAIR)  # buzz cut shows round the back
 	draw_circle(head + Vector2(_facing * 0.8, 0.5), 6.4, skin)
-	draw_rect(Rect2(head.x - 6.5, head.y - 7.5, 13, 3.5), HAIR)
+	draw_rect(Rect2(head.x - 6.0, head.y - 6.8, 12, 2.2), HAIR)  # short hairline
+	# Trimmed beard: thin line along the jaw into a chin beard, plus a moustache.
+	var face := head + Vector2(_facing * 0.8, 0.5)
+	var jaw := PackedVector2Array()
+	for i in 7:
+		var a := lerpf(0.15, PI * 0.55, i / 6.0)
+		jaw.append(face + Vector2(_facing * cos(a) * 6.2, sin(a) * 6.3))
+	draw_polyline(jaw, HAIR, 1.6)
+	draw_line(head + Vector2(_facing * 3.5, 2.2), head + Vector2(_facing * 6.0, 2.0), HAIR, 1.2)  # moustache
 	draw_circle(head + Vector2(-_facing * 1.5, 0.5), 1.6, skin.darkened(0.12))  # ear
 	_draw_face_injuries(head)
 
@@ -299,37 +350,61 @@ func _draw() -> void:
 	if _dead:
 		draw_line(eye + Vector2(-1.3, -1.3), eye + Vector2(1.3, 1.3), Color.BLACK, 1.0)
 		draw_line(eye + Vector2(-1.3, 1.3), eye + Vector2(1.3, -1.3), Color.BLACK, 1.0)
-	elif flinch > 0.0:
+	elif flinch > 0.0 or _burn > 0.0:
 		# Squeezed shut, mouth open in pain.
-		draw_line(eye + Vector2(-1.4, -0.8), eye + Vector2(1.2, 0.2), Color(0.15, 0.1, 0.08), 1.0)
-		draw_circle(head + Vector2(_facing * 4.2, 3.6), 1.3, Color(0.3, 0.08, 0.08))
+		draw_line(eye + Vector2(-1.4, -0.8), eye + Vector2(1.2, 0.2), Color(0.1, 0.06, 0.05), 1.0)
+		draw_circle(head + Vector2(_facing * 4.6, 3.6), 1.3, Color(0.25, 0.05, 0.05))
 	else:
-		draw_circle(eye, 1.2, Color(0.15, 0.1, 0.08))
+		draw_circle(eye, 1.2, Color(0.1, 0.06, 0.05))
 		if limping:
-			draw_line(head + Vector2(_facing * 2.5, 3.8), head + Vector2(_facing * 5.0, 3.4), Color(0.35, 0.15, 0.12), 0.8)  # grimace
+			draw_line(head + Vector2(_facing * 3.6, 3.8), head + Vector2(_facing * 5.8, 3.2), skin.darkened(0.45), 1.0)  # grimace
+		else:
+			draw_line(head + Vector2(_facing * 3.8, 3.6), head + Vector2(_facing * 5.6, 3.4), skin.darkened(0.35), 1.0)  # mouth
 	draw_circle(head + Vector2(_facing * 6.6, 1.2), 1.3, skin.darkened(0.08))  # nose
 
 	# Front arm over the body.
-	var arm := _limb(shoulder + Vector2(_facing, 0), arms[0].x, arms[0].y, 6.5, skin, 3.0)
+	var arm := _limb(shoulder + Vector2(_facing, 0), arms[0].x, arms[0].y, 6.5, shirt, skin, 3.0)
 	if health < 75.0:
 		# Scratches on the forearm.
 		var along := (arm[1] - arm[0]).normalized()
 		var across := along.orthogonal() * 1.5
 		var mid := arm[0].lerp(arm[1], 0.5)
-		draw_line(mid - across, mid + across + along, Color(0.7, 0.15, 0.12, 0.8), 0.8)
+		draw_line(mid - across, mid + across + along, Color(0.7, 0.12, 0.1, 0.9), 0.8)
 		if health < 45.0:
-			draw_line(mid - across - along * 2.0, mid + across - along, Color(0.7, 0.15, 0.12, 0.8), 0.8)
+			draw_line(mid - across - along * 2.0, mid + across - along, Color(0.7, 0.12, 0.1, 0.9), 0.8)
+
+	if _burn > 0.0:
+		_draw_flames(shoulder, hip)
 	draw_set_transform(Vector2.ZERO)
 
 
 func _draw_face_injuries(head: Vector2) -> void:
 	if health < 70.0:
-		draw_circle(head + Vector2(_facing * 2.8, 2.6), 1.9, BRUISE)  # cheek bruise
+		draw_circle(head + Vector2(_facing * 2.8, 2.0), 1.9, BRUISE)  # cheek bruise
 	if health < 55.0:
-		draw_line(head + Vector2(_facing * -1.0, -3.5), head + Vector2(_facing * 2.5, -2.2), Color(0.65, 0.12, 0.1, 0.9), 0.9)  # forehead cut
+		draw_line(head + Vector2(_facing * -1.0, -3.5), head + Vector2(_facing * 2.5, -2.2), Color(0.7, 0.1, 0.08, 0.95), 0.9)  # forehead cut
 	if health < 40.0:
-		draw_circle(head + Vector2(_facing * 3.5, -0.5), 2.4, Color(0.32, 0.18, 0.4, 0.75))  # black eye
+		draw_circle(head + Vector2(_facing * 3.5, -0.5), 2.4, Color(0.15, 0.05, 0.15, 0.8))  # swollen black eye
 	if health < 20.0:
 		# Blood trickling down from the hairline.
 		var top := head + Vector2(_facing * 0.5, -4.0)
 		draw_polyline(PackedVector2Array([top, top + Vector2(_facing * 0.6, 3.0), top + Vector2(_facing * 0.3, 6.5)]), BLOOD, 1.1)
+	if _scorched:
+		draw_circle(head + Vector2(-_facing * 2.0, 2.5), 1.6, Color(0.05, 0.04, 0.04, 0.5))  # soot smudge
+
+
+## Flickering tongues of fire licking up from the clothes.
+func _draw_flames(shoulder: Vector2, hip: Vector2) -> void:
+	var strength := clampf(_burn / BURN_TIME * 1.5, 0.3, 1.0)
+	for i in 5:
+		var base := Vector2(lerpf(-5.0, 5.0, i / 4.0), lerpf(hip.y - 2.0, shoulder.y + 4.0, fmod(i * 0.37, 1.0)))
+		var h := (6.0 + 4.0 * sin(_time * 23.0 + i * 1.7)) * strength
+		var sway := sin(_time * 17.0 + i) * 1.5
+		var outer := PackedVector2Array([base + Vector2(-2.2, 0), base + Vector2(2.2, 0), base + Vector2(sway, -h)])
+		draw_colored_polygon(outer, Color(1.0, 0.4, 0.05, 0.85))
+		var inner := PackedVector2Array([base + Vector2(-1.1, 0), base + Vector2(1.1, 0), base + Vector2(sway * 0.6, -h * 0.55)])
+		draw_colored_polygon(inner, Color(1.0, 0.85, 0.3, 0.95))
+	# Smoke wisps.
+	for i in 2:
+		var t := fmod(_time * 1.5 + i * 0.5, 1.0)
+		draw_circle(Vector2(sin(_time * 3.0 + i) * 2.0, shoulder.y - 4.0 - t * 14.0), 2.0 + t * 3.0, Color(0.25, 0.25, 0.25, 0.4 * (1.0 - t) * strength))

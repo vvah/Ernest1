@@ -19,6 +19,14 @@ var size := Vector2(100, 20)
 var color := Color(0.65, 0.62, 0.58)
 var ground := false
 var snowy := false  # high up: snow cap and icicles instead of moss
+var fragile := false  # cracked ledge: breaks on the second landing (see crack())
+
+signal broken
+
+var _collision: CollisionShape2D
+var _hits := 0
+var _wobble := 0.0  # seconds of shaking left after a landing
+var _fault_lines: Array[PackedVector2Array] = []  # big cracks of a fragile ledge
 
 var _outline := PackedVector2Array()
 var _shade := PackedColorArray()
@@ -55,10 +63,11 @@ static func noise_texture(frequency: float, octaves: int, dark: float) -> NoiseT
 func _ready() -> void:
 	var shape := RectangleShape2D.new()
 	shape.size = size
-	var collision := CollisionShape2D.new()
-	collision.shape = shape
-	collision.one_way_collision = true
-	add_child(collision)
+	_collision = CollisionShape2D.new()
+	_collision.shape = shape
+	_collision.one_way_collision = true
+	add_child(_collision)
+	set_process(false)
 
 	if _stone_tex == null:
 		_stone_tex = noise_texture(0.035, 5, 0.55)
@@ -66,7 +75,72 @@ func _ready() -> void:
 	texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 	if ground:
 		color = DIRT
+	if fragile:
+		color = color.lerp(Color(0.78, 0.62, 0.45), 0.35)  # crumbly sandstone tint
+		for i in 2:
+			_add_fault_line()
 	_build_look()
+
+
+## Called when the player lands on this ledge. Fragile ledges crack on the first
+## landing and break on the second.
+func crack() -> void:
+	if not fragile or _hits >= 2:
+		return
+	_hits += 1
+	if _hits == 1:
+		_wobble = 0.3
+		for i in 2:
+			_add_fault_line()
+		set_process(true)
+		queue_redraw()
+	else:
+		_break()
+
+
+func _process(delta: float) -> void:
+	_wobble = maxf(0.0, _wobble - delta)
+	if _wobble == 0.0:
+		set_process(false)
+	queue_redraw()
+
+
+## A zigzag crack from the top surface down through the rock.
+func _add_fault_line() -> void:
+	var half := size / 2.0
+	var p := Vector2(randf_range(-half.x * 0.7, half.x * 0.7), -half.y)
+	var line := PackedVector2Array([p])
+	for i in 4:
+		p += Vector2(randf_range(-6.0, 6.0), (size.y + 10.0) / 4.0)
+		line.append(p)
+	_fault_lines.append(line)
+
+
+func _break() -> void:
+	_collision.set_deferred("disabled", true)
+	var debris := CPUParticles2D.new()
+	debris.position = position
+	debris.one_shot = true
+	debris.explosiveness = 1.0
+	debris.amount = maxi(8, int(size.x / 5.0))
+	debris.lifetime = 1.3
+	debris.emission_shape = CPUParticles2D.EMISSION_SHAPE_RECTANGLE
+	debris.emission_rect_extents = size / 2.0
+	debris.direction = Vector2.UP
+	debris.spread = 70.0
+	debris.initial_velocity_min = 40.0
+	debris.initial_velocity_max = 150.0
+	debris.gravity = Vector2(0, 900)
+	debris.angular_velocity_min = -360.0
+	debris.angular_velocity_max = 360.0
+	debris.scale_amount_min = 3.0
+	debris.scale_amount_max = 8.0
+	debris.color = color
+	debris.finished.connect(debris.queue_free)
+	get_parent().add_child(debris)
+	debris.emitting = true
+	broken.emit()
+	queue_free()
 
 
 func _build_look() -> void:
@@ -132,6 +206,8 @@ func _lumpy(center: Vector2, radius: float, flatten: float) -> PackedVector2Arra
 
 func _draw() -> void:
 	var half := size / 2.0
+	if _wobble > 0.0:
+		draw_set_transform(Vector2(sin(_wobble * 90.0) * 2.0, 0.0))
 	draw_polygon(_outline, _shade, _uvs, _dirt_tex if ground else _stone_tex)
 
 	for pebble in _pebbles:
@@ -148,6 +224,8 @@ func _draw() -> void:
 	if not ground:
 		for crack in _cracks:
 			draw_polyline(crack, color.darkened(0.65), 1.0)
+		for line in _fault_lines:
+			draw_polyline(line, color.darkened(0.8), 2.0)
 		var closed := _outline.duplicate()
 		closed.append(_outline[0])
 		draw_polyline(closed, color.darkened(0.7), 1.5, true)

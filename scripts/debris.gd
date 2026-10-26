@@ -19,9 +19,12 @@ var _age := 0.0
 func _ready() -> void:
 	for i in randi_range(6, 9):
 		var size := radius * randf_range(0.25, 0.5)
+		# Corners spread evenly round the circle (with a little jitter) so the
+		# outline never folds over itself.
 		var points := PackedVector2Array()
-		for k in randi_range(3, 5):
-			points.append(Vector2.from_angle(TAU * k / 4.0 + randf_range(-0.4, 0.4)) * size * randf_range(0.6, 1.0))
+		var corners := randi_range(3, 5)
+		for k in corners:
+			points.append(Vector2.from_angle(TAU * (k + randf_range(-0.25, 0.25)) / corners) * size * randf_range(0.6, 1.0))
 		var out := Vector2.from_angle(randf_range(PI * 1.05, PI * 1.95))  # mostly upwards and sideways
 		_shards.append({
 			"points": points,
