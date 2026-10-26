@@ -1,14 +1,18 @@
 extends Area2D
 ## Falling rock. First shows a blinking warning at the top of the screen, then drops
-## from just above it. Falls through blocks; touching the player emits player_hit.
+## from just above it. Shatters into debris on the first block or player it hits,
+## so ledges give cover; the player takes damage scaled by rock size and speed.
 ## Set `camera` (and optionally `radius`) before adding to the tree.
 
-signal player_hit
+signal shattered(at: Vector2, hit_player: bool)
+
+const Debris := preload("res://scripts/debris.gd")
 
 const WARN_TIME := 0.9
 const GRAVITY := 900.0
 const MAX_FALL_SPEED := 650.0
 const COLOR := Color(0.5, 0.47, 0.45)
+const DAMAGE_PER_RADIUS := 2.4  # at full speed; a 10-16 px rock does ~24-38
 
 var camera: Camera2D
 var radius := 12.0
@@ -57,8 +61,25 @@ func _physics_process(delta: float) -> void:
 
 
 func _on_body_entered(body: Node2D) -> void:
-	if body.is_in_group("player"):
-		player_hit.emit()
+	if not monitoring or is_queued_for_deletion():
+		return
+	var hit_player := body.is_in_group("player")
+	if hit_player:
+		var speed_factor := 0.5 + 0.5 * _fall_speed / MAX_FALL_SPEED
+		body.take_damage(radius * DAMAGE_PER_RADIUS * speed_factor, global_position, "Von einem Stein erschlagen!")
+	_shatter(hit_player)
+
+
+func _shatter(hit_player: bool) -> void:
+	set_deferred("monitoring", false)
+	var debris := Debris.new()
+	debris.position = position
+	debris.color = COLOR
+	debris.radius = radius
+	debris.velocity = Vector2(0, _fall_speed)
+	get_parent().add_child.call_deferred(debris)
+	shattered.emit(global_position, hit_player)
+	queue_free()
 
 
 func _draw() -> void:

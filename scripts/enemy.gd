@@ -1,13 +1,16 @@
 extends Area2D
 ## Beetle that patrols back and forth on top of its block. Origin is at its feet.
-## Stomping it from above defeats it; touching it any other way emits player_hit.
+## Stomping it from above defeats it; touching it any other way gets you bitten
+## (damage + knockback), after which it backs off and pauses briefly.
 
-signal player_hit
 signal stomped(at: Vector2)
 
 const SIZE := Vector2(22, 16)
 const BODY := Color(0.32, 0.2, 0.12)
 const LEG := Color(0.12, 0.08, 0.05)
+const BITE_DAMAGE := 14.0      # plus 10% of its speed, so faster beetles bite harder
+const BITE_COOLDOWN := 1.2
+const PAUSE_AFTER_BITE := 0.6
 
 var patrol_half_width := 30.0
 var speed := 50.0
@@ -15,6 +18,9 @@ var _dir := 1.0
 var _home_x := 0.0
 var _time := 0.0
 var _dead := false
+var _cooldown := 0.0
+var _pause := 0.0
+var _snap := 0.0  # mandibles snapping shut after a bite
 
 
 func _ready() -> void:
@@ -35,6 +41,17 @@ func _physics_process(delta: float) -> void:
 	if _dead:
 		return
 	_time += delta
+	_cooldown = maxf(0.0, _cooldown - delta)
+	_snap = maxf(0.0, _snap - delta)
+	# Keeps biting a player who stays in contact once the cooldown is over.
+	if _cooldown == 0.0 and monitoring:
+		for body in get_overlapping_bodies():
+			if body.is_in_group("player"):
+				_on_body_entered(body)
+	if _pause > 0.0:
+		_pause -= delta
+		queue_redraw()
+		return
 	position.x += _dir * speed * delta
 	if absf(position.x - _home_x) > patrol_half_width:
 		position.x = _home_x + signf(position.x - _home_x) * patrol_half_width
@@ -55,8 +72,14 @@ func _on_body_entered(body: Node2D) -> void:
 		var tween := create_tween()
 		tween.tween_property(self, "scale", Vector2(1.5, 0.15), 0.15)
 		tween.tween_callback(queue_free)
-	else:
-		player_hit.emit()
+	elif _cooldown == 0.0:
+		_cooldown = BITE_COOLDOWN
+		_snap = 0.2
+		_dir = signf(global_position.x - player.global_position.x)  # back off
+		if _dir == 0.0:
+			_dir = 1.0
+		_pause = PAUSE_AFTER_BITE
+		player.take_damage(BITE_DAMAGE + speed * 0.1, global_position, "Vom Käfer zu Tode gebissen!")
 
 
 func _ellipse(center: Vector2, radii: Vector2) -> PackedVector2Array:
@@ -77,7 +100,9 @@ func _draw() -> void:
 
 	# Head, mandibles and antennae on the side it walks towards.
 	var head := Vector2(_dir * 10.0, -6.0)
-	draw_line(head, head + Vector2(_dir * 4.5, 2.0), LEG, 1.3)
+	var jaw := 4.5 + 3.5 * _snap / 0.2
+	draw_line(head, head + Vector2(_dir * jaw, 0.5), LEG, 1.3)
+	draw_line(head, head + Vector2(_dir * jaw, 3.0), LEG, 1.3)
 	var twitch := sin(_time * 7.0) * 1.5
 	draw_polyline(PackedVector2Array([head, head + Vector2(_dir * 4.0, -5.0), head + Vector2(_dir * 9.0, -6.0 + twitch)]), LEG, 1.0)
 	draw_circle(head, 4.0, BODY.darkened(0.35))

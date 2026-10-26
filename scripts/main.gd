@@ -1,11 +1,41 @@
 extends Node2D
 ## Endless climb: spawns blocks above the player, scrolls the camera up,
-## tracks the best height and ends the run when the player falls off-screen.
+## tracks the best height and ends the run when the player dies or falls off-screen.
+## Also does the damage feedback: hit-stop, shake, blood, a full-screen shader
+## (red flash, low-health heartbeat vignette and desaturation) and the health bar.
 
 const Block := preload("res://scripts/block.gd")
 const Enemy := preload("res://scripts/enemy.gd")
 const Rock := preload("res://scripts/rock.gd")
+const Medkit := preload("res://scripts/medkit.gd")
 const Background := preload("res://scripts/background.gd")
+const HealthBar := preload("res://scripts/health_bar.gd")
+
+const DAMAGE_SHADER := """
+shader_type canvas_item;
+uniform sampler2D screen_tex : hint_screen_texture, filter_linear;
+uniform float hurt = 0.0;   // red flash right after a hit
+uniform float low = 0.0;    // 0..1, how close to death
+uniform float pulse = 0.0;  // heartbeat, 0..1
+void fragment() {
+	// Slight blur when dazed or badly hurt.
+	vec2 px = SCREEN_PIXEL_SIZE * (1.5 * hurt + 1.2 * low);
+	vec3 c = texture(screen_tex, SCREEN_UV).rgb * 0.4;
+	c += texture(screen_tex, SCREEN_UV + vec2(px.x, 0.0)).rgb * 0.15;
+	c += texture(screen_tex, SCREEN_UV - vec2(px.x, 0.0)).rgb * 0.15;
+	c += texture(screen_tex, SCREEN_UV + vec2(0.0, px.y)).rgb * 0.15;
+	c += texture(screen_tex, SCREEN_UV - vec2(0.0, px.y)).rgb * 0.15;
+	// Colour drains out as health runs low.
+	float grey = dot(c, vec3(0.299, 0.587, 0.114));
+	c = mix(c, vec3(grey), low * 0.8);
+	// Red at the edges: a flash on hits, a heartbeat when low (the dark
+	// tunnel also closes in a little with each beat).
+	float edge = smoothstep(0.25 - 0.06 * low * pulse, 0.8, length((UV - 0.5) * vec2(1.0, 0.75)) * 1.4);
+	float red = edge * (hurt * 0.7 + low * (0.4 + 0.35 * pulse)) + hurt * 0.1;
+	c = mix(c, vec3(0.45, 0.0, 0.02), clamp(red, 0.0, 0.75));
+	COLOR = vec4(c, 1.0);
+}
+"""
 
 const BLOCK_GAP_Y := 85.0       # vertical distance between blocks (jump peak is ~112)
 const MAX_STEP_X := 170.0       # max horizontal shift from the previous block
@@ -22,6 +52,10 @@ const SNOW_START_HEIGHT := 40   # ledges start getting snow caps here...
 const SNOW_FULL_HEIGHT := 70    # ...and all have them from here on
 const NIGHT_CLIMB := 9000.0     # matches background.gd: world lighting is darkest here
 const NIGHT_LIGHT := Color(0.55, 0.6, 0.82)
+const MEDKIT_START_BLOCK := 10
+const MEDKIT_CHANCE := 0.07
+const LOW_HEALTH := 40.0        # heartbeat vignette and desaturation start here
+const BLOOD := Color(0.55, 0.02, 0.03, 0.9)
 
 @onready var player: CharacterBody2D = $Player
 @onready var camera: Camera2D = $Camera2D
@@ -37,6 +71,11 @@ var _half_height := 0.0
 var _rock_timer := 0.0
 var _shake := 0.0  # camera shake strength in px, decays over time
 var _light: CanvasModulate
+var _time := 0.0
+var _hurt_flash := 0.0
+var _death_fade := 0.0
+var _damage_fx: ShaderMaterial
+var _health_bar: Node2D
 var _score_label: Label
 var _message_label: Label
 
@@ -62,7 +101,12 @@ func _ready() -> void:
 	_spawn_block(Vector2(_width / 2.0, BLOCK_HEIGHT / 2.0), Vector2(_width, BLOCK_HEIGHT), Color.WHITE, true)
 	_next_y = BLOCK_HEIGHT / 2.0 - BLOCK_GAP_Y
 
+	Engine.time_scale = 1.0  # in case a restart happened during hit-stop
 	player.landed.connect(_on_player_landed)
+	player.hurt.connect(_on_player_hurt)
+	player.healed.connect(func(_amount: float) -> void:
+		_spawn_dust(player.position + Vector2(0, -20), 12, Color(0.5, 1.0, 0.55, 0.9)))
+	player.died.connect(_end_game.bind(true))
 	_build_ui()
 	_message_label.text = "Klettere die Blöcke hoch!\nA/D oder Pfeiltasten zum Laufen, Leertaste/W/Hoch zum Springen"
 
@@ -71,6 +115,7 @@ func _process(delta: float) -> void:
 	_shake *= exp(-10.0 * delta)
 	camera.offset = Vector2(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0)) * _shake
 	_light.color = Color.WHITE.lerp(NIGHT_LIGHT, clampf(-camera.position.y / NIGHT_CLIMB, 0.0, 1.0))
+	_update_damage_fx(delta)
 
 	if _game_over:
 		if Input.is_action_just_pressed("jump"):
@@ -126,6 +171,10 @@ func _spawn_next_block() -> void:
 	var enemy_chance := minf(0.4, 0.15 + _blocks_spawned * 0.004)
 	if _blocks_spawned >= ENEMY_START_BLOCK and w >= ENEMY_MIN_BLOCK_W and randf() < enemy_chance:
 		_spawn_enemy(block, minf(110.0, 40.0 + _blocks_spawned * 0.8))
+	elif _blocks_spawned >= MEDKIT_START_BLOCK and randf() < MEDKIT_CHANCE:
+		var kit := Medkit.new()
+		kit.position = Vector2(randf_range(-w / 2.0 + 10.0, w / 2.0 - 10.0), -BLOCK_HEIGHT / 2.0)
+		block.add_child(kit)
 
 
 func _spawn_block(pos: Vector2, block_size: Vector2, block_color: Color, is_ground := false, is_snowy := false) -> Block:
@@ -146,7 +195,6 @@ func _spawn_enemy(block: Block, speed: float) -> void:
 	enemy.position = Vector2(randf_range(-10.0, 10.0), -block.size.y / 2.0)
 	enemy.patrol_half_width = block.size.x / 2.0 - Enemy.SIZE.x / 2.0
 	enemy.speed = speed
-	enemy.player_hit.connect(_end_game.bind("Von einem Gegner erwischt!", true))
 	enemy.stomped.connect(func(at: Vector2) -> void:
 		_spawn_dust(at, 12, Color(Enemy.BODY.lightened(0.3), 0.8))
 		_shake = maxf(_shake, 2.0))
@@ -159,7 +207,9 @@ func _spawn_rock() -> void:
 	rock.radius = randf_range(10.0, 16.0)
 	var x := player.position.x if randf() < ROCK_AIM_CHANCE else randf_range(0.0, _width)
 	rock.position = Vector2(clampf(x, rock.radius, _width - rock.radius), camera.position.y - _half_height)
-	rock.player_hit.connect(_end_game.bind("Von einem Stein getroffen!", true))
+	rock.shattered.connect(func(_at: Vector2, hit_player: bool) -> void:
+		if not hit_player:
+			_shake = maxf(_shake, 1.5))
 	add_child(rock)
 
 
@@ -196,7 +246,65 @@ func _spawn_dust(pos: Vector2, amount: int, dust_color: Color) -> void:
 	dust.emitting = true
 
 
-## `knockout`: the player was hit and tumbles off; otherwise they already fell off-screen.
+## Every hit: a brief freeze (hit-stop), camera shake, red flash and blood
+## spraying away from where the hit came from — all scaled by the damage.
+func _on_player_hurt(amount: float, from: Vector2) -> void:
+	_shake = maxf(_shake, 3.0 + amount * 0.2)
+	_hurt_flash = clampf(amount / 30.0, 0.5, 1.0)
+	var away := (player.global_position + Vector2(0, -18) - from).normalized()
+	if from.y > player.global_position.y:  # fall damage: no wound, dust instead
+		_spawn_dust(player.position, 16, DUST)
+	else:
+		_spawn_blood(player.position + Vector2(0, -18), away, int(clampf(amount / 3.0, 4.0, 14.0)))
+	_hit_stop(0.05 + amount * 0.002)
+
+
+func _hit_stop(duration: float) -> void:
+	Engine.time_scale = 0.05
+	get_tree().create_timer(duration, true, false, true).timeout.connect(func() -> void:
+		if not _game_over:
+			Engine.time_scale = 1.0)
+
+
+func _spawn_blood(pos: Vector2, dir: Vector2, amount: int) -> void:
+	var blood := CPUParticles2D.new()
+	blood.position = pos
+	blood.one_shot = true
+	blood.explosiveness = 0.95
+	blood.amount = amount
+	blood.lifetime = 0.7
+	blood.direction = dir
+	blood.spread = 35.0
+	blood.initial_velocity_min = 60.0
+	blood.initial_velocity_max = 170.0
+	blood.gravity = Vector2(0, 700)
+	blood.scale_amount_min = 1.2
+	blood.scale_amount_max = 2.4
+	var fade := Gradient.new()
+	fade.set_color(0, BLOOD)
+	fade.set_color(1, Color(BLOOD.darkened(0.3), 0.0))
+	blood.color_ramp = fade
+	blood.finished.connect(blood.queue_free)
+	add_child(blood)
+	blood.emitting = true
+
+
+func _update_damage_fx(delta: float) -> void:
+	_time += delta
+	_hurt_flash = move_toward(_hurt_flash, 0.0, delta * 2.5)
+	if _game_over and player.health <= 0.0:
+		_death_fade = move_toward(_death_fade, 1.0, delta * 0.8)
+	var low := sqrt(clampf((LOW_HEALTH - player.health) / LOW_HEALTH, 0.0, 1.0))
+	# Heartbeat speeds up as health drops; sharp double thump.
+	var beat := fmod(_time * lerpf(1.2, 2.6, low), 1.0)
+	var pulse := maxf(0.0, 1.0 - absf(beat - 0.1) * 10.0) + 0.6 * maxf(0.0, 1.0 - absf(beat - 0.3) * 10.0)
+	_damage_fx.set_shader_parameter("hurt", _hurt_flash)
+	_damage_fx.set_shader_parameter("low", maxf(low, _death_fade))
+	_damage_fx.set_shader_parameter("pulse", pulse)
+	_health_bar.health = player.health
+
+
+## `knockout`: the player was knocked out and tumbles off; otherwise they already fell off-screen.
 func _end_game(reason: String, knockout: bool) -> void:
 	if _game_over:
 		return
@@ -204,6 +312,10 @@ func _end_game(reason: String, knockout: bool) -> void:
 	if knockout:
 		player.die()
 		_shake = 8.0
+		# Slow-motion collapse, back to normal speed after a moment.
+		Engine.time_scale = 0.3
+		get_tree().create_timer(0.6, true, false, true).timeout.connect(func() -> void:
+			Engine.time_scale = 1.0)
 	else:
 		player.set_physics_process(false)
 	_message_label.text = "%s\nHöhe: %d\n\nLeertaste für neuen Versuch" % [reason, _best_height]
@@ -212,6 +324,21 @@ func _end_game(reason: String, knockout: bool) -> void:
 func _build_ui() -> void:
 	var ui := CanvasLayer.new()
 	add_child(ui)
+
+	# Full-screen damage effect; it reads the screen, so it sits below the HUD.
+	var fx := ColorRect.new()
+	fx.size = get_viewport_rect().size
+	fx.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var shader := Shader.new()
+	shader.code = DAMAGE_SHADER
+	_damage_fx = ShaderMaterial.new()
+	_damage_fx.shader = shader
+	fx.material = _damage_fx
+	ui.add_child(fx)
+
+	_health_bar = HealthBar.new()
+	_health_bar.position = Vector2(_width - HealthBar.WIDTH - 36.0, 16)
+	ui.add_child(_health_bar)
 
 	_score_label = Label.new()
 	_score_label.position = Vector2(12, 8)
