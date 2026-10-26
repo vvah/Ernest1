@@ -11,6 +11,10 @@ const SNOW := Color(0.94, 0.96, 1.0)
 const ICE := Color(0.75, 0.88, 0.98, 0.9)
 const GROUND_DEPTH := 600.0  # dirt drawn below the ground so no sky shows under it
 const UV_SCALE := 1.0 / 192.0
+const FRESH_BLOOD := Color(0.62, 0.02, 0.04, 0.95)
+const DRIED_BLOOD := Color(0.3, 0.06, 0.04, 0.9)
+const DRY_TIME := 8.0      # seconds for a blood stain to darken fully
+const MAX_STAINS := 24
 
 static var _stone_tex: NoiseTexture2D
 static var _dirt_tex: NoiseTexture2D
@@ -38,6 +42,7 @@ var _cracks: Array[PackedVector2Array] = []
 var _tufts := PackedVector2Array()  # x = position, y = size
 var _vines := PackedVector2Array()  # x = position, y = length
 var _mossy := true
+var _stains: Array[Dictionary] = []  # {x, r, born, drip, dots}: blood on the top surface
 
 
 ## Grey grain multiplied with the vertex colours, so one texture serves every rock tone.
@@ -67,6 +72,7 @@ func _ready() -> void:
 	_collision.shape = shape
 	_collision.one_way_collision = true
 	add_child(_collision)
+	add_to_group("blocks")  # found by blood drops and the ragdoll (see top_y())
 	set_process(false)
 
 	if _stone_tex == null:
@@ -100,9 +106,53 @@ func crack() -> void:
 
 func _process(delta: float) -> void:
 	_wobble = maxf(0.0, _wobble - delta)
-	if _wobble == 0.0:
+	var drying := false
+	for stain in _stains:
+		drying = drying or _stain_age(stain) < DRY_TIME
+	if _wobble == 0.0 and not drying:
 		set_process(false)
 	queue_redraw()
+
+
+## World y of the walkable top surface.
+func top_y() -> float:
+	return global_position.y - size.y / 2.0
+
+
+## True if world x lies over this ledge's top surface.
+func covers_x(x: float) -> bool:
+	return absf(x - global_position.x) <= size.x / 2.0
+
+
+## Blood landing on the top surface at world x. Nearby drops pool together;
+## stains near an edge run down the side.
+func add_stain(world_x: float, amount: float) -> void:
+	var half := size / 2.0
+	var x := clampf(world_x - global_position.x, -half.x + 1.0, half.x - 1.0)
+	for stain in _stains:
+		if absf(stain.x - x) < stain.r + 1.5:
+			stain.r = minf(stain.r + amount * 0.35, 9.0)
+			stain.born = Time.get_ticks_msec()  # fresh blood on top
+			if absf(x) > half.x - 5.0:
+				stain.drip = minf(stain.drip + 2.0, size.y + 10.0)
+			set_process(true)
+			queue_redraw()
+			return
+	if _stains.size() >= MAX_STAINS:
+		_stains.pop_front()
+	var dots := PackedVector2Array()
+	for i in randi_range(1, 3):
+		dots.append(Vector2(x + randf_range(-6.0, 6.0), randf_range(0.4, 1.0)))
+	_stains.append({
+		"x": x, "r": 1.2 + amount * 0.5, "born": Time.get_ticks_msec(),
+		"drip": randf_range(3.0, 7.0) if absf(x) > half.x - 5.0 else 0.0, "dots": dots,
+	})
+	set_process(true)
+	queue_redraw()
+
+
+func _stain_age(stain: Dictionary) -> float:
+	return (Time.get_ticks_msec() - stain.born) / 1000.0
 
 
 ## A zigzag crack from the top surface down through the rock.
@@ -232,12 +282,34 @@ func _draw() -> void:
 		# Sunlit top edge.
 		draw_line(Vector2(-half.x + 3.0, -half.y + 1.0), Vector2(half.x - 3.0, -half.y + 1.0), Color(1, 1, 0.95, 0.35), 2.0)
 
-	if not _mossy:
-		return
-	if snowy:
-		_draw_snow(half)
-	else:
-		_draw_moss(half)
+	if _mossy:
+		if snowy:
+			_draw_snow(half)
+		else:
+			_draw_moss(half)
+	_draw_stains(half)
+
+
+## Blood soaking into the top surface: a flattened pool, spatter dots and,
+## at the edges, a trickle down the side. Fresh blood is bright and darkens as it dries.
+func _draw_stains(half: Vector2) -> void:
+	for stain in _stains:
+		var dry := clampf(_stain_age(stain) / DRY_TIME, 0.0, 1.0)
+		var c := FRESH_BLOOD.lerp(DRIED_BLOOD, dry)
+		var center := Vector2(stain.x, -half.y + 0.5)
+		var pool := PackedVector2Array()
+		for i in 12:
+			var a := TAU * i / 12.0
+			pool.append(center + Vector2(cos(a) * stain.r, sin(a) * stain.r * 0.32))
+		draw_colored_polygon(pool, c)
+		draw_circle(center + Vector2(-stain.r * 0.3, -0.3), stain.r * 0.2, Color(1, 0.6, 0.6, 0.3 * (1.0 - dry)))  # wet sheen, gone once dry
+		for dot in stain.dots:
+			draw_circle(Vector2(dot.x, -half.y + 0.5), dot.y, c)
+		if stain.drip > 0.0:
+			var side := signf(stain.x) * (half.x - 0.5)
+			var top := Vector2(side, -half.y + 1.0)
+			draw_line(top, top + Vector2(0, stain.drip), c, 1.6)
+			draw_circle(top + Vector2(0, stain.drip), 1.3, c)
 
 
 func _draw_moss(half: Vector2) -> void:

@@ -11,6 +11,8 @@ const Medkit := preload("res://scripts/medkit.gd")
 const Background := preload("res://scripts/background.gd")
 const Dragon := preload("res://scripts/dragon.gd")
 const HealthBar := preload("res://scripts/health_bar.gd")
+const Sfx := preload("res://scripts/sfx.gd")
+const BloodDrop := preload("res://scripts/blood_drop.gd")
 
 const DAMAGE_SHADER := """
 shader_type canvas_item;
@@ -18,14 +20,19 @@ uniform sampler2D screen_tex : hint_screen_texture, filter_linear;
 uniform float hurt = 0.0;   // red flash right after a hit
 uniform float low = 0.0;    // 0..1, how close to death
 uniform float pulse = 0.0;  // heartbeat, 0..1
+uniform float daze = 0.0;   // concussion: wobble and double vision
 void fragment() {
+	// Concussion: the picture sways and a drifting ghost image appears.
+	vec2 uv = SCREEN_UV + vec2(sin(TIME * 1.7 + SCREEN_UV.y * 5.0) * 0.004, cos(TIME * 1.3) * 0.003) * daze;
 	// Slight blur when dazed or badly hurt.
-	vec2 px = SCREEN_PIXEL_SIZE * (1.5 * hurt + 1.2 * low);
-	vec3 c = texture(screen_tex, SCREEN_UV).rgb * 0.4;
-	c += texture(screen_tex, SCREEN_UV + vec2(px.x, 0.0)).rgb * 0.15;
-	c += texture(screen_tex, SCREEN_UV - vec2(px.x, 0.0)).rgb * 0.15;
-	c += texture(screen_tex, SCREEN_UV + vec2(0.0, px.y)).rgb * 0.15;
-	c += texture(screen_tex, SCREEN_UV - vec2(0.0, px.y)).rgb * 0.15;
+	vec2 px = SCREEN_PIXEL_SIZE * (1.5 * hurt + 1.2 * low + 1.0 * daze);
+	vec3 c = texture(screen_tex, uv).rgb * 0.4;
+	c += texture(screen_tex, uv + vec2(px.x, 0.0)).rgb * 0.15;
+	c += texture(screen_tex, uv - vec2(px.x, 0.0)).rgb * 0.15;
+	c += texture(screen_tex, uv + vec2(0.0, px.y)).rgb * 0.15;
+	c += texture(screen_tex, uv - vec2(0.0, px.y)).rgb * 0.15;
+	vec3 ghost = texture(screen_tex, uv + vec2(0.014 + 0.006 * sin(TIME * 2.3), 0.003 * cos(TIME * 1.9)) * daze).rgb;
+	c = mix(c, ghost, 0.4 * daze);
 	// Colour drains out as health runs low.
 	float grey = dot(c, vec3(0.299, 0.587, 0.114));
 	c = mix(c, vec3(grey), low * 0.8);
@@ -83,6 +90,9 @@ var _hurt_flash := 0.0
 var _death_fade := 0.0
 var _damage_fx: ShaderMaterial
 var _health_bar: Node2D
+var _sfx: Node
+var _drip_timer := 0.0
+var _last_beat := 0.0
 var _score_label: Label
 var _message_label: Label
 
@@ -112,9 +122,12 @@ func _ready() -> void:
 	_next_y = BLOCK_HEIGHT / 2.0 - BLOCK_GAP_Y
 
 	Engine.time_scale = 1.0  # in case a restart happened during hit-stop
+	_sfx = Sfx.new()
+	add_child(_sfx)
 	player.landed.connect(_on_player_landed)
 	player.hurt.connect(_on_player_hurt)
 	player.healed.connect(func(_amount: float) -> void:
+		_sfx.play("heal", -4.0)
 		_spawn_dust(player.position + Vector2(0, -20), 12, Color(0.5, 1.0, 0.55, 0.9)))
 	player.died.connect(_end_game.bind(true))
 	_build_ui()
@@ -209,6 +222,7 @@ func _spawn_block(pos: Vector2, block_size: Vector2, block_color: Color, is_grou
 	block.position = pos
 	block.broken.connect(func() -> void:
 		_blocks.erase(block)
+		_sfx.play("crack", 0.0, 0.7)
 		_shake = maxf(_shake, 3.0))
 	add_child(block)
 	_blocks.append(block)
@@ -222,6 +236,7 @@ func _spawn_enemy(block: Block, speed: float) -> void:
 	enemy.patrol_half_width = block.size.x / 2.0 - Enemy.SIZE.x / 2.0
 	enemy.speed = speed
 	enemy.stomped.connect(func(at: Vector2) -> void:
+		_sfx.play("squish")
 		_spawn_dust(at, 12, Color(Enemy.BODY.lightened(0.3), 0.8))
 		_shake = maxf(_shake, 2.0))
 	block.add_child(enemy)
@@ -233,7 +248,11 @@ func _spawn_rock() -> void:
 	rock.radius = randf_range(10.0, 16.0)
 	var x := player.position.x if randf() < ROCK_AIM_CHANCE else randf_range(0.0, _width)
 	rock.position = Vector2(clampf(x, rock.radius, _width - rock.radius), camera.position.y - _half_height)
-	rock.shattered.connect(func(_at: Vector2, hit_player: bool) -> void:
+	rock.shattered.connect(func(at: Vector2, hit_player: bool) -> void:
+		# Louder the closer to the player; off-screen rocks are not heard.
+		var distance := at.distance_to(player.global_position)
+		if distance < 600.0:
+			_sfx.play("crack", lerpf(0.0, -14.0, distance / 600.0))
 		if not hit_player:
 			_shake = maxf(_shake, 1.5))
 	add_child(rock)
@@ -256,6 +275,7 @@ func _spawn_dragon(screen_y := NAN, delay := 0.0) -> void:
 	dragon.delay = delay
 	dragon.scales = DRAGON_COLORS.pick_random()
 	dragon.stomped.connect(func(at: Vector2) -> void:
+		_sfx.play("thud", 0.0, 0.8)
 		_spawn_dust(at, 16, Color(dragon.scales.lightened(0.3), 0.8))
 		_shake = maxf(_shake, 4.0))
 	add_child(dragon)
@@ -344,15 +364,32 @@ func _blood_particles(amount: int, lifetime: float) -> CPUParticles2D:
 
 ## Every hit: a brief freeze (hit-stop), camera shake, red flash and blood
 ## spraying away from where the hit came from — all scaled by the damage.
-func _on_player_hurt(amount: float, from: Vector2) -> void:
+func _on_player_hurt(amount: float, from: Vector2, cause: String) -> void:
 	_shake = maxf(_shake, 3.0 + amount * 0.2)
 	_hurt_flash = clampf(amount / 30.0, 0.5, 1.0)
 	var away := (player.global_position + Vector2(0, -18) - from).normalized()
 	if from.y > player.global_position.y:  # fall damage: no wound, dust instead
 		_spawn_dust(player.position, 16, DUST)
+		_sfx.play("thud", 0.0, 0.75)
 	else:
 		_spawn_hit_blood(player.position + Vector2(0, -18), away, int(clampf(amount / 3.0, 4.0, 14.0)))
+		# A few real drops fly off too and stain the rocks they land on.
+		for i in int(clampf(amount / 6.0, 2.0, 6.0)):
+			_spawn_drop(player.global_position + Vector2(0, -18), away.rotated(randf_range(-0.6, 0.6)) * randf_range(80.0, 200.0), 1.2)
+		if cause.contains("Käfer"):
+			_sfx.play("bite", 2.0)
+		elif cause.contains("Verbrannt"):
+			_sfx.play("burst")
+		_sfx.play("thud", minf(0.0, -8.0 + amount * 0.3))
 	_hit_stop(0.05 + amount * 0.002)
+
+
+func _spawn_drop(at: Vector2, velocity: Vector2, amount: float) -> void:
+	var drop := BloodDrop.new()
+	drop.velocity = velocity
+	drop.amount = amount
+	add_child(drop)
+	drop.global_position = at
 
 
 func _hit_stop(duration: float) -> void:
@@ -391,13 +428,29 @@ func _update_damage_fx(delta: float) -> void:
 	if _game_over and player.health <= 0.0:
 		_death_fade = move_toward(_death_fade, 1.0, delta * 0.8)
 	var low := sqrt(clampf((LOW_HEALTH - player.health) / LOW_HEALTH, 0.0, 1.0))
-	# Heartbeat speeds up as health drops; sharp double thump.
+	# Heartbeat speeds up as health drops; sharp double thump, heard as well as seen.
 	var beat := fmod(_time * lerpf(1.2, 2.6, low), 1.0)
 	var pulse := maxf(0.0, 1.0 - absf(beat - 0.1) * 10.0) + 0.6 * maxf(0.0, 1.0 - absf(beat - 0.3) * 10.0)
+	if beat < _last_beat and low > 0.0 and player.health > 0.0:
+		_sfx.play("heartbeat", lerpf(-10.0, 3.0, low))
+	_last_beat = beat
 	_damage_fx.set_shader_parameter("hurt", _hurt_flash)
 	_damage_fx.set_shader_parameter("low", maxf(low, _death_fade))
 	_damage_fx.set_shader_parameter("pulse", pulse)
+	_damage_fx.set_shader_parameter("daze", player.daze())
 	_health_bar.health = player.health
+	_health_bar.bleeding = player.is_bleeding() and player.health > 0.0
+	_health_bar.burning = player.is_burning()
+	_health_bar.dazed = player.daze() > 0.0
+	_health_bar.sprained = player.is_sprained()
+	_sfx.set_burning(player.is_burning())
+
+	# Open wounds drip; the drops stain the ledges below.
+	_drip_timer -= delta
+	var on_screen: bool = player.bleed_point().y < camera.position.y + _half_height + 40.0
+	if player.is_bleeding() and on_screen and _drip_timer <= 0.0:
+		_drip_timer = randf_range(0.12, 0.3)
+		_spawn_drop(player.bleed_point(), Vector2(randf_range(-20.0, 20.0), randf_range(-10.0, 20.0)), 0.8)
 
 
 ## `knockout`: the player was knocked out and tumbles off; otherwise they already fell off-screen.
@@ -409,6 +462,7 @@ func _end_game(reason: String, knockout: bool) -> void:
 		player.die()
 		_shake = 8.0
 		_spawn_blood()
+		_sfx.play("thud", 2.0, 0.6)
 		# Slow-motion collapse, back to normal speed after a moment.
 		Engine.time_scale = 0.3
 		get_tree().create_timer(0.6, true, false, true).timeout.connect(func() -> void:

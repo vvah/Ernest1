@@ -1,7 +1,8 @@
 extends Node2D
 ## HUD health bar (main.gd puts it on the HUD layer and sets `health` each frame).
 ## Recent damage stays visible as a pale segment that drains after a short delay;
-## the heart beats faster the lower the health.
+## the heart beats faster the lower the health. Icons below the bar show the
+## player's conditions (main.gd sets the flags): bleeding, burning, dazed, sprained.
 
 const WIDTH := 150.0
 const HEIGHT := 14.0
@@ -10,6 +11,10 @@ const DRAIN_DELAY := 0.45
 const DRAIN_SPEED := 45.0
 
 var health := MAX_HEALTH
+var bleeding := false
+var burning := false
+var dazed := false
+var sprained := false
 
 var _shown := MAX_HEALTH  # lagging value for the damage segment
 var _delay := 0.0
@@ -56,3 +61,38 @@ func _draw() -> void:
 	draw_colored_polygon(PackedVector2Array([
 		center + Vector2(-7.0, 0.0) * s, center + Vector2(7.0, 0.0) * s, center + Vector2(0, 7.5) * s]), red)
 	draw_circle(center + Vector2(-3.5, -2.8) * s, 1.3 * s, Color(1, 1, 1, 0.5))
+	_draw_conditions()
+
+
+## One small icon per active condition, in a row under the bar.
+func _draw_conditions() -> void:
+	var x := 30.0
+	var y := HEIGHT + 14.0
+	var t := Time.get_ticks_msec() / 1000.0
+	if bleeding:
+		var pulse := 1.0 + 0.15 * sin(t * 8.0)
+		var c := Vector2(x, y + 2.0)
+		draw_colored_polygon(PackedVector2Array([c + Vector2(0, -8) * pulse, c + Vector2(-4, -1) * pulse, c + Vector2(4, -1) * pulse]), Color(0.85, 0.05, 0.08))
+		draw_circle(c, 4.3 * pulse, Color(0.85, 0.05, 0.08))
+		draw_circle(c + Vector2(-1.5, -1.5), 1.2, Color(1, 1, 1, 0.5))
+		x += 18.0
+	if burning:
+		for i in 3:
+			var h := 9.0 + 3.0 * sin(t * 20.0 + i * 2.0)
+			var bx := x - 4.0 + i * 4.0
+			draw_colored_polygon(PackedVector2Array([Vector2(bx - 2.5, y + 5), Vector2(bx + 2.5, y + 5), Vector2(bx, y + 5 - h)]), Color(1.0, 0.45 + i * 0.15, 0.05))
+		x += 18.0
+	if dazed:
+		# Stars circling.
+		for i in 3:
+			var a := t * 4.0 + TAU * i / 3.0
+			var p := Vector2(x, y) + Vector2(cos(a) * 6.0, sin(a) * 2.5)
+			draw_circle(p, 1.8, Color(1.0, 0.9, 0.3))
+		x += 18.0
+	if sprained:
+		# A bone with a crack.
+		draw_line(Vector2(x - 6, y + 3), Vector2(x + 6, y - 3), Color(0.95, 0.93, 0.85), 2.5)
+		for end in [Vector2(x - 6, y + 3), Vector2(x + 6, y - 3)]:
+			draw_circle(end + Vector2(-1, -1), 1.7, Color(0.95, 0.93, 0.85))
+			draw_circle(end + Vector2(1, 1), 1.7, Color(0.95, 0.93, 0.85))
+		draw_polyline(PackedVector2Array([Vector2(x - 1, y - 3), Vector2(x + 1, y), Vector2(x - 1, y + 3)]), Color(0.85, 0.1, 0.1), 1.2)
